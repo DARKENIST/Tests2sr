@@ -1,0 +1,249 @@
+-- =====================================================
+-- СИСТЕМА УПРАВЛЕНИЯ УЧЕБНЫМ ПРОЦЕССОМ
+-- СУБД: PostgreSQL
+-- =====================================================
+
+-- Удаление старых объектов (если существуют)
+DROP TABLE IF EXISTS CourseTeacher CASCADE;
+DROP TABLE IF EXISTS Enrollment CASCADE;
+DROP TABLE IF EXISTS Student CASCADE;
+DROP TABLE IF EXISTS Teacher CASCADE;
+DROP TABLE IF EXISTS Course CASCADE;
+
+-- =====================================================
+-- 1. СОЗДАНИЕ ТАБЛИЦ
+-- =====================================================
+
+-- Таблица "Студент"
+CREATE TABLE Student (
+    student_id   SERIAL PRIMARY KEY,
+    full_name    VARCHAR(150) NOT NULL,
+    birth_date   DATE NOT NULL,
+    group_name   VARCHAR(50) NOT NULL,
+    contact_info VARCHAR(200)
+);
+
+-- Таблица "Преподаватель"
+CREATE TABLE Teacher (
+    teacher_id   SERIAL PRIMARY KEY,
+    full_name    VARCHAR(150) NOT NULL,
+    department   VARCHAR(100) NOT NULL,
+    degree       VARCHAR(50)
+);
+
+-- Таблица "Курс"
+CREATE TABLE Course (
+    course_code VARCHAR(20) PRIMARY KEY,
+    title       VARCHAR(100) NOT NULL,
+    description TEXT
+);
+
+-- Таблица "Запись на курс" (связь студента и курса с оценкой)
+CREATE TABLE Enrollment (
+    student_id  INT NOT NULL,
+    course_code VARCHAR(20) NOT NULL,
+    grade       INT CHECK (grade >= 2 AND grade <= 5),
+    PRIMARY KEY (student_id, course_code),
+    FOREIGN KEY (student_id) REFERENCES Student(student_id) ON DELETE CASCADE,
+    FOREIGN KEY (course_code) REFERENCES Course(course_code) ON DELETE CASCADE
+);
+
+-- Таблица "Преподавание" (связь курса и преподавателя - многие ко многим)
+CREATE TABLE CourseTeacher (
+    course_code VARCHAR(20) NOT NULL,
+    teacher_id  INT NOT NULL,
+    PRIMARY KEY (course_code, teacher_id),
+    FOREIGN KEY (course_code) REFERENCES Course(course_code) ON DELETE CASCADE,
+    FOREIGN KEY (teacher_id) REFERENCES Teacher(teacher_id) ON DELETE CASCADE
+);
+
+-- =====================================================
+-- 2. ЗАПОЛНЕНИЕ ТЕСТОВЫМИ ДАННЫМИ (не менее 3 записей в каждой таблице)
+-- =====================================================
+
+-- Студенты
+INSERT INTO Student (full_name, birth_date, group_name, contact_info) VALUES
+('Иванов Иван Иванович', '2000-05-15', 'ИС-31', 'ivanov@mail.ru, +7-999-123-4567'),
+('Петрова Анна Сергеевна', '2001-08-22', 'ПИ-42', 'petrova@mail.ru, +7-999-234-5678'),
+('Сидоров Петр Алексеевич', '1999-11-03', 'ВТ-21', 'sidorov@mail.ru, +7-999-345-6789');
+
+-- Преподаватели
+INSERT INTO Teacher (full_name, department, degree) VALUES
+('Смирнова Елена Васильевна', 'Кафедра информационных систем', 'Доцент'),
+('Кузнецов Дмитрий Александрович', 'Кафедра программирования', 'Профессор'),
+('Васильева Ольга Петровна', 'Кафедра вычислительной техники', 'Кандидат наук');
+
+-- Курсы
+INSERT INTO Course (course_code, title, description) VALUES
+('CS101', 'Основы программирования', 'Введение в алгоритмы и структуры данных, язык Python'),
+('CS201', 'Базы данных', 'Проектирование БД, SQL, нормализация, транзакции'),
+('CS301', 'Веб-разработка', 'HTML, CSS, JavaScript, фронтенд и бэкенд технологии');
+
+-- Записи на курсы (Enrollment)
+INSERT INTO Enrollment (student_id, course_code, grade) VALUES
+(1, 'CS101', 5),
+(1, 'CS201', 4),
+(2, 'CS101', 5),
+(2, 'CS301', 4),
+(3, 'CS201', 3),
+(3, 'CS301', 5);
+
+-- Преподавание курсов (CourseTeacher)
+INSERT INTO CourseTeacher (course_code, teacher_id) VALUES
+('CS101', 1),
+('CS201', 2),
+('CS301', 3),
+('CS201', 1);  -- один курс могут вести несколько преподавателей
+
+-- =====================================================
+-- 3. ПРОЦЕДУРА ПРОВЕРКИ ДАННЫХ НА ВАЛИДНОСТЬ
+-- =====================================================
+
+CREATE OR REPLACE FUNCTION validate_student_data()
+RETURNS TABLE(
+    student_id INT,
+    full_name VARCHAR,
+    birth_date DATE,
+    group_name VARCHAR,
+    contact_info VARCHAR,
+    is_valid INT,
+    validation_message TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT 
+        s.student_id,
+        s.full_name,
+        s.birth_date,
+        s.group_name,
+        s.contact_info,
+        CASE 
+            WHEN s.full_name IS NULL OR length(trim(s.full_name)) = 0 THEN 0
+            WHEN s.birth_date IS NULL THEN 0
+            WHEN s.birth_date > CURRENT_DATE - INTERVAL '16 years' THEN 0
+            WHEN s.group_name IS NULL OR length(trim(s.group_name)) = 0 THEN 0
+            ELSE 1
+        END AS is_valid,
+        CASE 
+            WHEN s.full_name IS NULL OR length(trim(s.full_name)) = 0 THEN 'Ошибка: ФИО не может быть пустым'
+            WHEN s.birth_date IS NULL THEN 'Ошибка: Дата рождения не может быть пустой'
+            WHEN s.birth_date > CURRENT_DATE - INTERVAL '16 years' THEN 'Ошибка: Студент должен быть старше 16 лет'
+            WHEN s.group_name IS NULL OR length(trim(s.group_name)) = 0 THEN 'Ошибка: Группа не может быть пустой'
+            ELSE 'Валидная запись'
+        END AS validation_message
+    FROM Student s;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Пример вызова процедуры:
+-- SELECT * FROM validate_student_data();
+
+-- =====================================================
+-- 4. ТРИГГЕР ДЛЯ ЛОГИРОВАНИЯ ИЗМЕНЕНИЙ
+-- =====================================================
+
+-- Создание таблицы логов
+CREATE TABLE IF NOT EXISTS ChangeLog (
+    log_id SERIAL PRIMARY KEY,
+    table_name VARCHAR(50) NOT NULL,
+    operation_type VARCHAR(10) NOT NULL,
+    changed_data TEXT,
+    change_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    changed_by VARCHAR(50) DEFAULT CURRENT_USER
+);
+
+-- Функция для триггера
+CREATE OR REPLACE FUNCTION log_data_changes()
+RETURNS TRIGGER AS $$
+BEGIN
+    INSERT INTO ChangeLog (table_name, operation_type, changed_data)
+    VALUES (
+        TG_TABLE_NAME,
+        TG_OP,
+        CASE
+            WHEN TG_OP = 'INSERT' THEN row_to_json(NEW)::TEXT
+            WHEN TG_OP = 'UPDATE' THEN row_to_json(OLD)::TEXT || ' -> ' || row_to_json(NEW)::TEXT
+            WHEN TG_OP = 'DELETE' THEN row_to_json(OLD)::TEXT
+        END
+    );
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Создание триггеров для всех основных таблиц
+-- Триггер на таблицу Student
+DROP TRIGGER IF EXISTS student_changes ON Student;
+CREATE TRIGGER student_changes
+AFTER INSERT OR UPDATE OR DELETE ON Student
+FOR EACH ROW EXECUTE FUNCTION log_data_changes();
+
+-- Триггер на таблицу Teacher
+DROP TRIGGER IF EXISTS teacher_changes ON Teacher;
+CREATE TRIGGER teacher_changes
+AFTER INSERT OR UPDATE OR DELETE ON Teacher
+FOR EACH ROW EXECUTE FUNCTION log_data_changes();
+
+-- Триггер на таблицу Course
+DROP TRIGGER IF EXISTS course_changes ON Course;
+CREATE TRIGGER course_changes
+AFTER INSERT OR UPDATE OR DELETE ON Course
+FOR EACH ROW EXECUTE FUNCTION log_data_changes();
+
+-- =====================================================
+-- 5. ПРОВЕРКА РАБОТЫ ТРИГГЕРА И ПРОЦЕДУРЫ
+-- =====================================================
+
+-- Пример: обновление данных студента (триггер должен создать запись в ChangeLog)
+UPDATE Student SET contact_info = 'ivanov@newmail.ru, +7-999-888-7777' WHERE student_id = 1;
+
+-- Проверка содержимого логов
+-- SELECT * FROM ChangeLog;
+
+-- Проверка валидации данных
+-- SELECT * FROM validate_student_data();
+
+-- =====================================================
+-- 6. СОЗДАНИЕ БЭКАПА БАЗЫ ДАННЫХ (скрипт для выполнения в командной строке)
+-- =====================================================
+
+-- Для создания бэкапа выполните в командной строке/терминале:
+-- pg_dump -U postgres -d university_db -F c -b -v -f "C:\backups\university_db_backup.dump"
+
+-- Для восстановления из бэкапа:
+-- pg_restore -U postgres -d university_db -v "C:\backups\university_db_backup.dump"
+
+-- Альтернативный способ - создание SQL-дампа (читаемый скрипт):
+-- pg_dump -U postgres -d university_db -F p -b -v -f "C:\backups\university_db_backup.sql"
+
+-- =====================================================
+-- 7. ДОПОЛНИТЕЛЬНЫЕ ЗАПРОСЫ ДЛЯ ДЕМОНСТРАЦИИ
+-- =====================================================
+
+-- Вывод всех студентов с их курсами и оценками
+SELECT 
+    s.full_name AS "Студент",
+    s.group_name AS "Группа",
+    c.title AS "Курс",
+    e.grade AS "Оценка"
+FROM Student s
+JOIN Enrollment e ON s.student_id = e.student_id
+JOIN Course c ON e.course_code = c.course_code
+ORDER BY s.full_name;
+
+-- Вывод курсов с преподавателями
+SELECT 
+    c.title AS "Курс",
+    t.full_name AS "Преподаватель",
+    t.degree AS "Степень"
+FROM Course c
+JOIN CourseTeacher ct ON c.course_code = ct.course_code
+JOIN Teacher t ON ct.teacher_id = t.teacher_id
+ORDER BY c.title;
+
+-- Средняя оценка по каждому курсу
+SELECT 
+    c.title AS "Курс",
+    AVG(e.grade)::NUMERIC(3,2) AS "Средняя оценка"
+FROM Course c
+JOIN Enrollment e ON c.course_code = e.course_code
+GROUP BY c.title;
